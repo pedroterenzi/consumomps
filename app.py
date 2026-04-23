@@ -16,32 +16,41 @@ def enviar_para_google_sheets(df):
         scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
         
         if "google_credentials" in st.secrets:
-            # 1. Converte o objeto do Streamlit para um dicionário real
+            # Transforma os secrets em um dicionário normal
             creds_info = {k: v for k, v in st.secrets["google_credentials"].items()}
             
-            # 2. LIMPEZA DA CHAVE (Onde o erro costuma acontecer)
-            # Remove aspas extras e garante que as quebras de linha sejam interpretadas corretamente
-            if "private_key" in creds_info:
-                key = creds_info["private_key"]
-                # Se a chave veio com aspas literais ou barras duplas da colagem
-                key = key.replace("\\n", "\n").replace('"', '').strip()
-                creds_info["private_key"] = key
+            # --- LIMPEZA AGRESSIVA DA CHAVE ---
+            # Remove aspas malucas, garante que o \n seja real e remove espaços nas pontas
+            key = creds_info["private_key"]
+            key = key.replace("\\n", "\n").replace('"', '').replace("'", "").strip()
             
+            # Garante que a chave comece e termine exatamente onde deve
+            if not key.startswith("-----BEGIN PRIVATE KEY-----"):
+                key = "-----BEGIN PRIVATE KEY-----\n" + key
+            if not key.endswith("-----END PRIVATE KEY-----"):
+                key = key + "\n-----END PRIVATE KEY-----"
+            
+            creds_info["private_key"] = key
+            
+            # Tenta autenticar
             creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
             client = gspread.authorize(creds)
+            
+            # Abre a planilha
             sh = client.open_by_key(SPREADSHEET_ID)
             worksheet = sh.get_worksheet(0)
             
+            # Prepara os dados
             df_export = df.astype(str)
             valores = df_export.values.tolist()
             
             worksheet.append_rows(valores)
             return True
         else:
-            st.error("Credenciais não encontradas nos Secrets.")
+            st.error("Secrets 'google_credentials' não encontrados no Streamlit.")
             return False
     except Exception as e:
-        st.error(f"Erro na integração com o Drive: {e}")
+        st.error(f"Erro Crítico na Integração: {e}")
         return False
 
 # --- FUNÇÕES DE TRATAMENTO DE DADOS (Lógica V5 Gold) ---
