@@ -123,19 +123,21 @@ if f_oficial and f_spec and f_perdas and f_reg:
             st.subheader(f"✅ Resultado OP {op_alvo}")
             st.table(df_final)
 
-            # --- FUNÇÃO DE COPIA SEM CABEÇALHO ---
-            st.subheader("📋 Dados para Colar no Drive")
+            # --- PREPARAÇÃO PARA COLAGEM NO DRIVE (PADRÃO BRASIL) ---
+            st.subheader("📋 Bloco para Copiar (Padrão BR)")
             
-            # Gera o texto sem o index e sem o header (cabeçalho)
-            # O separador '\t' garante que o Sheets entenda as colunas
-            dados_brutos = df_final.to_csv(index=False, header=False, sep='\t')
+            # Criamos uma cópia para não estragar o backup em Excel
+            df_copia = df_final.copy()
             
-            st.write("Clique dentro do quadro abaixo, use **Ctrl+A** para selecionar tudo e **Ctrl+C**.")
-            st.text_area("Bloco de Colagem (Sem Cabeçalho)", value=dados_brutos, height=250)
+            # Formata a coluna Quantidade: troca ponto por vírgula e garante que não tenha separador de milhar
+            df_copia['Quantidade'] = df_copia['Quantidade'].apply(lambda x: "{:.3f}".format(x).replace('.', ','))
             
-            st.info("💡 Dica: No Google Drive, basta selecionar a primeira célula vazia da coluna OP e dar Ctrl+V.")
+            # Gera o texto para colagem (sem nomes de colunas e com TAB)
+            dados_brutos = df_copia.to_csv(index=False, header=False, sep='\t')
             
-            # Backup em Excel se precisar
+            st.text_area("Selecione tudo (Ctrl+A), copie e cole no Sheets", value=dados_brutos, height=250)
+            
+            # Backup em Excel (mantém o padrão técnico de ponto para não dar erro em outras análises)
             buffer = io.BytesIO()
             df_final.to_excel(buffer, index=False)
             st.download_button("📥 Baixar Excel (Backup)", buffer.getvalue(), f"PCP_OP_{op_alvo}.xlsx")
