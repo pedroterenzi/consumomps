@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 
-st.set_page_config(page_title="PCP - Consumo Consolidado", layout="wide")
+st.set_page_config(page_title="PCP - Consumo Final por Lote", layout="wide")
 
 # --- FUNÇÕES DE HIGIENE ---
 
@@ -23,13 +23,11 @@ def parse_num(val):
 def get_consolidated_specs(df_spec, parent_code):
     """ Busca todos os componentes da SPEC e consolida as quantidades unitárias """
     parent_clean = clean_id(parent_code)
-    # Busca primeiro nível
     first_level = df_spec[df_spec['G1_COD'].apply(clean_id) == parent_clean]
     
     materiais_unitarios = {}
     scale_factor = 1.0
     
-    # Identifica se há um código de fralda (intermediário)
     for _, row in first_level.iterrows():
         comp_code = clean_id(row['G1_COMP'])
         qty = parse_num(row['G1_QUANT'])
@@ -45,14 +43,13 @@ def get_consolidated_specs(df_spec, parent_code):
         
         elif comp_code.startswith('5') or comp_code.startswith('6'):
             desc = row['DESC_COMP'] if 'DESC_COMP' in df_spec.columns else "MP"
-            # Ajusta a espec do pacote para unidade
             ratio = qty / scale_factor if scale_factor > 0 else qty
             if comp_code not in materiais_unitarios:
                 materiais_unitarios[comp_code] = {'ratio': ratio, 'desc': desc}
                 
     return materiais_unitarios, scale_factor
 
-st.title("📊 Relatório PCP - Consumo por Lote (Final)")
+st.title("📊 Relatório PCP - Consumo por Lote")
 
 # --- SIDEBAR ---
 f_oficial = st.sidebar.file_uploader("1. Relatório Oficial", type=["xlsm", "xlsx"])
@@ -74,7 +71,7 @@ if f_oficial and f_spec and f_perdas and f_reg:
     op_alvo = st.selectbox("Selecione a OP Atual", sorted(df_oficial['OP_REF'].unique(), reverse=True))
     op_anterior = st.text_input("Informe a OP Anterior (para Saldo)")
 
-    if st.button("🚀 Gerar Relatório Consolidado"):
+    if st.button("🚀 Gerar Relatório"):
         dados_op = df_oficial[df_oficial['OP_REF'] == op_alvo]
         prod_real = dados_op['Machine Counter'].sum()
         prod_prev = df_oficial[df_oficial['OP_REF'] == clean_id(op_anterior)]['Machine Counter'].sum() if op_anterior else 0
@@ -87,11 +84,9 @@ if f_oficial and f_spec and f_perdas and f_reg:
         for sku, info in materiais.items():
             if "MOD" in sku or not sku.isdigit(): continue
             
-            # Fator de Perda
             f_row = df_perdas[df_perdas['Código'].apply(clean_id) == sku]
             fator = parse_num(f_row['% da espec'].values[0]) if not f_row.empty else 1.0
             
-            # Consumo total calculado pela ESPEC
             consumo_meta = (info['ratio'] * prod_real) * fator
             consumo_prev_meta = (info['ratio'] * prod_prev) * fator
             
@@ -101,40 +96,47 @@ if f_oficial and f_spec and f_perdas and f_reg:
             
             saldo_a_preencher = consumo_meta
             reserva_ant = consumo_prev_meta
+            ultimo_lote_conhecido = "N/A"
             
             if lotes_disp.empty:
-                final_list.append({"Cód MP": sku, "Descrição": info['desc'], "Kg": round(consumo_meta, 3), "Lote": "S/ REGISTRO", "Status": "Verificar Manual"})
+                final_list.append({
+                    "Cód MP": sku, "Descrição": info['desc'], "Kg": round(consumo_meta, 3), 
+                    "Lote": "VERIFICAR", "OP": op_alvo
+                })
             else:
                 for _, l_row in lotes_disp.iterrows():
                     if saldo_a_preencher <= 0: break
                     
                     qtd_lote = parse_num(l_row['QUANTIDADE'])
+                    ultimo_lote_conhecido = l_row['LOTE']
                     
-                    # 1. Abate o que a OP anterior "comeu"
                     if reserva_ant > 0:
                         gasto_ant = min(reserva_ant, qtd_lote)
                         reserva_ant -= gasto_ant
                         qtd_lote -= gasto_ant
                     
-                    # 2. O que sobrou preenche a OP atual
                     if qtd_lote > 0 and saldo_a_preencher > 0:
                         uso_op_atual = min(saldo_a_preencher, qtd_lote)
                         saldo_a_preencher -= uso_op_atual
                         final_list.append({
                             "Cód MP": sku, "Descrição": info['desc'], 
-                            "Kg": round(uso_op_atual, 3), "Lote": l_row['LOTE'], "Status": f"Entrada {l_row['OP']}"
+                            "Kg": round(uso_op_atual, 3), "Lote": l_row['LOTE'], "OP": clean_id(l_row['OP'])
                         })
 
-                # 3. Se após todos os lotes ainda faltar quilos para bater a meta
+                # AJUSTE SOLICITADO: Se faltar quilo, atribui ao último lote usado ao invés de escrever "Saldo Máquina"
                 if saldo_a_preencher > 0.1:
                     final_list.append({
                         "Cód MP": sku, "Descrição": info['desc'], 
-                        "Kg": round(saldo_a_preencher, 3), "Lote": "SALDO MÁQUINA", "Status": "Pé de Máquina"
+                        "Kg": round(saldo_a_preencher, 3), "Lote": ultimo_lote_conhecido, "OP": op_alvo
                     })
 
         df_res = pd.DataFrame(final_list)
+        st.subheader(f"Relatório Final - OP {op_alvo}")
         st.table(df_res)
         
         buffer = io.BytesIO()
         df_res.to_excel(buffer, index=False)
-        st.download_button("📥 Baixar Excel", buffer.getvalue(), f"PCP_Consumo_OP_{op_alvo}.xlsx")
+        st.download_button("📥 Baixar Excel", buffer.getvalue(), f"Consumo_PCP_OP_{op_alvo}.xlsx")
+
+else:
+    st.info("Carregue os arquivos para começar.")
