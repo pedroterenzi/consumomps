@@ -1,11 +1,20 @@
 import streamlit as st
 import pandas as pd
 import io
+import os
 
-st.set_page_config(page_title="PCP Elite - Final Gold", layout="wide")
+# Configuração da Página
+st.set_page_config(page_title="PCP Elite - Gestão de Consumo", layout="wide")
+
+# --- CAMINHOS FIXOS DAS PLANILHAS ---
+CAMINHOS = {
+    "oficial": r"X:\10_Jaguariuna\1.Production\2.(Historico de produtividade)\1.(Produtividade)\Relatório de produção\Relatório das paradas Operacionais(Oficial).xlsm",
+    "spec": r"C:\Users\pedro-santos\Downloads\SPEC.xlsx",
+    "stand": r"C:\Users\pedro-santos\Documents\real x stand novo.xlsx",
+    "requisicao": r"C:\Users\pedro-santos\Downloads\Controle requisição x OP (13).xlsx"
+}
 
 # --- FUNÇÕES DE HIGIENE ---
-
 def clean_id(val):
     if pd.isna(val) or val == "": return ""
     return str(val).strip().split('.')[0].lstrip('0')
@@ -51,40 +60,57 @@ def get_consolidated_specs(df_spec, parent_code):
                 
     return materiais_unitarios, scale_factor
 
-st.title("📊 Relatório PCP - Consumo por Lote (Final Gold)")
+st.title("📊 Gestão de Consumo de MP por OP")
+st.markdown("---")
 
-# --- SIDEBAR ---
-f_oficial = st.sidebar.file_uploader("1. Relatório Oficial", type=["xlsm", "xlsx"])
-f_spec = st.sidebar.file_uploader("2. SPEC.xlsx", type=["xlsx", "csv"])
-f_perdas = st.sidebar.file_uploader("3. Real x Stand (Planilha1)", type=["xlsx"])
-f_reg = st.sidebar.file_uploader("4. Controle Requisição", type=["xlsx"])
+# --- CARREGAMENTO AUTOMÁTICO ---
+@st.cache_data(show_spinner="Carregando bases de dados locais...")
+def carregar_dados_locais():
+    # Verifica se os arquivos existem
+    for nome, path in CAMINHOS.items():
+        if not os.path.exists(path):
+            return None, f"Arquivo não encontrado: {path}"
+    
+    try:
+        df_oficial = pd.read_excel(CAMINHOS["oficial"], sheet_name='Result by order')
+        df_skus = pd.read_excel(CAMINHOS["oficial"], sheet_name='Dados SKUs')
+        df_spec = pd.read_excel(CAMINHOS["spec"])
+        df_perdas = pd.read_excel(CAMINHOS["stand"], sheet_name='Planilha1')
+        df_reg = pd.read_excel(CAMINHOS["requisicao"], sheet_name='REGISTROS', skiprows=2)
+        return (df_oficial, df_skus, df_spec, df_perdas, df_reg), None
+    except Exception as e:
+        return None, f"Erro ao ler arquivos: {e}"
 
-if f_oficial and f_spec and f_perdas and f_reg:
-    with st.spinner('Consolidando dados...'):
-        # Carregando abas extras para a regra da Polybag
-        df_oficial = pd.read_excel(f_oficial, sheet_name='Result by order')
-        df_skus = pd.read_excel(f_oficial, sheet_name='Dados SKUs')
-        df_spec = pd.read_excel(f_spec) if f_spec.name.endswith('.xlsx') else pd.read_csv(f_spec)
-        df_perdas = pd.read_excel(f_perdas, sheet_name='Planilha1')
-        df_reg = pd.read_excel(f_reg, sheet_name='REGISTROS', skiprows=2)
+dados, erro = carregar_dados_locais()
+
+if erro:
+    st.error(erro)
+    st.info("Certifique-se de que as pastas estão acessíveis e o servidor X: está mapeado.")
+else:
+    df_oficial, df_skus, df_spec, df_perdas, df_reg = dados
 
     df_oficial['OP_REF'] = df_oficial['Nº Ordem'].apply(clean_id)
     df_reg['OP_REF'] = df_reg['OP'].apply(clean_id)
     df_reg['SKU_REF'] = df_reg['SKU'].apply(clean_id)
     
-    op_alvo = st.selectbox("Selecione a OP Atual", sorted(df_oficial['OP_REF'].unique(), reverse=True))
-    op_anterior = st.text_input("Informe a OP Anterior")
+    # Seleção de OP
+    ops_disponiveis = sorted(df_oficial['OP_REF'].unique(), reverse=True)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        op_alvo = st.selectbox("Selecione a OP Atual", ops_disponiveis)
+    with col2:
+        op_anterior = st.text_input("Informe a OP Anterior (Saldo)")
 
-    if st.button("🚀 Gerar Relatório Final"):
+    if st.button("🚀 Gerar Relatório"):
+        # 1. Dados da OP
         dados_op = df_oficial[df_oficial['OP_REF'] == op_alvo]
         prod_real_bruta = dados_op['Machine Counter'].sum()
-        # COLUNA AN: Peças Estoque - Ajuste
         prod_estoque_real = dados_op['Peças Estoque - Ajuste'].sum()
-        
         cod_pai = clean_id(dados_op['Código'].iloc[0])
-        materiais, escala_spec = get_consolidated_specs(df_spec, cod_pai)
         
-        # Busca fraldas por pacote na aba Dados SKUs (Coluna D)
+        # BOM e Escala
+        materiais, escala_spec = get_consolidated_specs(df_spec, cod_pai)
         sku_info = df_skus[df_skus.iloc[:, 0].apply(clean_id) == cod_pai]
         fardo_estoque = parse_num(sku_info.iloc[0, 3]) if not sku_info.empty else escala_spec
 
@@ -93,30 +119,24 @@ if f_oficial and f_spec and f_perdas and f_reg:
         for sku, info in materiais.items():
             if "MOD" in sku or not sku.isdigit(): continue
             
-            # --- LÓGICA ESPECIAL PARA POLYBAG (5905...) ---
+            # Cálculo da Meta
             if sku.startswith('5905'):
-                # (Total de peças no estoque / Fraldas por pacote) * 1.04
                 consumo_meta = (prod_estoque_real / fardo_estoque) * 1.04
-                # Para a OP anterior (FIFO), repetimos a lógica se informada
                 if op_anterior:
                     dados_ant = df_oficial[df_oficial['OP_REF'] == clean_id(op_anterior)]
-                    prod_estoque_ant = dados_ant['Peças Estoque - Ajuste'].sum()
-                    consumo_prev_meta = (prod_estoque_ant / fardo_estoque) * 1.04
-                else:
-                    consumo_prev_meta = 0
+                    prod_est_ant = dados_ant['Peças Estoque - Ajuste'].sum()
+                    consumo_prev_meta = (prod_est_ant / fardo_estoque) * 1.04
+                else: consumo_prev_meta = 0
             else:
-                # --- LÓGICA NORMAL PARA OUTRAS MPs ---
                 f_row = df_perdas[df_perdas['Código'].apply(clean_id) == sku]
                 fator = parse_num(f_row['% da espec'].values[0]) if not f_row.empty else 1.0
                 consumo_meta = (info['ratio'] * prod_real_bruta) * fator
-                
                 if op_anterior:
                     prod_ant_bruta = df_oficial[df_oficial['OP_REF'] == clean_id(op_anterior)]['Machine Counter'].sum()
                     consumo_prev_meta = (info['ratio'] * prod_ant_bruta) * fator
-                else:
-                    consumo_prev_meta = 0
+                else: consumo_prev_meta = 0
             
-            # --- RATEIO DE LOTES ---
+            # Lotes
             ops_busca = [clean_id(op_anterior), op_alvo] if op_anterior else [op_alvo]
             lotes_disp = df_reg[(df_reg['OP_REF'].isin(ops_busca)) & (df_reg['SKU_REF'] == sku)].copy()
             
@@ -124,34 +144,41 @@ if f_oficial and f_spec and f_perdas and f_reg:
             reserva_ant = consumo_prev_meta
             
             if lotes_disp.empty:
-                pre_report.append({"Cód MP": sku, "Descrição": info['desc'], "Kg": round(consumo_meta, 3), "Lote": "S/ REGISTRO", "OP": op_alvo})
+                pre_report.append({"OP": op_alvo, "Código": sku, "Descrição": info['desc'], "Quantidade": round(consumo_meta, 3), "Lote": "S/ REGISTRO"})
             else:
                 for _, l_row in lotes_disp.iterrows():
                     if saldo_a_preencher <= 0: break
-                    qtd_entrada = parse_num(l_row['QUANTIDADE'])
+                    qtd_ent = parse_num(l_row['QUANTIDADE'])
                     if reserva_ant > 0:
-                        gasto_ant = min(reserva_ant, qtd_entrada)
-                        reserva_ant -= gasto_ant
-                        qtd_entrada -= gasto_ant
-                    if qtd_entrada > 0 and saldo_a_preencher > 0:
-                        uso = min(saldo_a_preencher, qtd_entrada)
+                        gasto = min(reserva_ant, qtd_ent)
+                        reserva_ant -= gasto
+                        qtd_ent -= gasto
+                    if qtd_ent > 0 and saldo_a_preencher > 0:
+                        uso = min(saldo_a_preencher, qtd_ent)
                         saldo_a_preencher -= uso
-                        pre_report.append({"Cód MP": sku, "Descrição": info['desc'], "Kg": uso, "Lote": str(l_row['LOTE']).strip(), "OP": clean_id(l_row['OP'])})
+                        pre_report.append({"OP": clean_id(l_row['OP']), "Código": sku, "Descrição": info['desc'], "Quantidade": uso, "Lote": str(l_row['LOTE']).strip()})
                 
                 if saldo_a_preencher > 1.0:
-                    pre_report.append({"Cód MP": sku, "Descrição": info['desc'], "Kg": saldo_a_preencher, "Lote": "FALTA REGISTRO", "OP": "VERIFICAR"})
+                    pre_report.append({"OP": "VERIFICAR", "Código": sku, "Descrição": info['desc'], "Quantidade": round(saldo_a_preencher, 3), "Lote": "FALTA REGISTRO"})
 
-        # Agrupamento e Exibição
-        df_final = pd.DataFrame(pre_report)
-        if not df_final.empty:
-            df_final = df_final.groupby(['Cód MP', 'Descrição', 'Lote', 'OP'], as_index=False).agg({'Kg': 'sum'})
-            df_final['Kg'] = df_final['Kg'].round(3)
-            st.subheader(f"Relatório Consolidado - OP {op_alvo}")
+        # --- ORGANIZAÇÃO FINAL DAS COLUNAS ---
+        df_pre = pd.DataFrame(pre_report)
+        if not df_pre.empty:
+            # Agrupar Lotes iguais
+            df_final = df_pre.groupby(['OP', 'Código', 'Descrição', 'Lote'], as_index=False).agg({'Quantidade': 'sum'})
+            df_final['Quantidade'] = df_final['Quantidade'].round(3)
+            
+            # Ordenar colunas conforme solicitado
+            df_final = df_final[['OP', 'Código', 'Descrição', 'Quantidade', 'Lote']]
+            
+            st.subheader(f"Relatório Final - OP {op_alvo}")
             st.table(df_final)
             
             buffer = io.BytesIO()
             df_final.to_excel(buffer, index=False)
-            st.download_button("📥 Baixar Excel", buffer.getvalue(), f"PCP_OP_{op_alvo}.xlsx")
+            st.download_button("📥 Baixar Excel PCP", buffer.getvalue(), f"Consumo_PCP_OP_{op_alvo}.xlsx")
 
-else:
-    st.info("Carregue os arquivos para começar.")
+st.sidebar.markdown("---")
+if st.sidebar.button("🔄 Atualizar Dados"):
+    st.cache_data.clear()
+    st.rerun()
