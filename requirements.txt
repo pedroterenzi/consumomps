@@ -1,5 +1,5 @@
 streamlit
 pandas
-matplotlib
-xlsxwriter
 openpyxl
+gspread
+google-auth
