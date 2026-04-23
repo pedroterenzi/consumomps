@@ -2,13 +2,14 @@ import streamlit as st
 import pandas as pd
 import io
 import gspread
-import os
+import base64
+import json
 from google.oauth2.service_account import Credentials
 
 # Configuração da Página
 st.set_page_config(page_title="PCP Elite - Automação Total", layout="wide")
 
-# --- CONFIGURAÇÕES DO GOOGLE SHEETS ---
+# ID da planilha mestre
 SPREADSHEET_ID = '1OAYZ66D4XxE0B4IIlrAtGqOFEx3qVP2s9jqzCbE_lWw'
 
 def enviar_para_google_sheets(df):
@@ -16,44 +17,29 @@ def enviar_para_google_sheets(df):
         scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
         
         if "google_credentials" in st.secrets:
-            # Transforma os secrets em um dicionário normal
-            creds_info = {k: v for k, v in st.secrets["google_credentials"].items()}
+            # DECODIFICAÇÃO SEGURA: Transforma o Base64 de volta em JSON
+            encoded_key = st.secrets["google_credentials"]["encoded_key"]
+            decoded_key = base64.b64decode(encoded_key).decode("utf-8")
+            creds_info = json.loads(decoded_key)
             
-            # --- LIMPEZA AGRESSIVA DA CHAVE ---
-            # Remove aspas malucas, garante que o \n seja real e remove espaços nas pontas
-            key = creds_info["private_key"]
-            key = key.replace("\\n", "\n").replace('"', '').replace("'", "").strip()
-            
-            # Garante que a chave comece e termine exatamente onde deve
-            if not key.startswith("-----BEGIN PRIVATE KEY-----"):
-                key = "-----BEGIN PRIVATE KEY-----\n" + key
-            if not key.endswith("-----END PRIVATE KEY-----"):
-                key = key + "\n-----END PRIVATE KEY-----"
-            
-            creds_info["private_key"] = key
-            
-            # Tenta autenticar
             creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
             client = gspread.authorize(creds)
-            
-            # Abre a planilha
             sh = client.open_by_key(SPREADSHEET_ID)
             worksheet = sh.get_worksheet(0)
             
-            # Prepara os dados
             df_export = df.astype(str)
             valores = df_export.values.tolist()
             
             worksheet.append_rows(valores)
             return True
         else:
-            st.error("Secrets 'google_credentials' não encontrados no Streamlit.")
+            st.error("Erro: 'encoded_key' não encontrada nos Secrets.")
             return False
     except Exception as e:
-        st.error(f"Erro Crítico na Integração: {e}")
+        st.error(f"Erro na conexão: {e}")
         return False
 
-# --- FUNÇÕES DE TRATAMENTO DE DADOS (Lógica V5 Gold) ---
+# --- FUNÇÕES DE TRATAMENTO ---
 
 def clean_id(val):
     if pd.isna(val) or val == "": return ""
@@ -92,13 +78,12 @@ def get_consolidated_specs(df_spec, parent_code):
         if comp_code.startswith(('5', '6')):
             qty = parse_num(row['G1_QUANT'])
             desc = row['DESC_COMP'] if 'DESC_COMP' in df_spec.columns else "MP"
-            ratio = qty / scale_factor if scale_factor > 0 else qty
+            ratio_unitario = qty / scale_factor if scale_factor > 0 else qty
             if comp_code not in materiais_unitarios:
-                materiais_unitarios[comp_code] = {'ratio': ratio, 'desc': desc}
+                materiais_unitarios[comp_code] = {'ratio': ratio_unitario, 'desc': desc}
     return materiais_unitarios, scale_factor
 
 # --- INTERFACE ---
-
 st.title("🚀 PCP Elite - Sincronização Automática")
 
 st.sidebar.header("📂 Arquivos")
@@ -108,7 +93,7 @@ f_perdas = st.sidebar.file_uploader("3. Real x Stand", type=["xlsx"])
 f_reg = st.sidebar.file_uploader("4. Controle Requisição", type=["xlsx"])
 
 if f_oficial and f_spec and f_perdas and f_reg:
-    with st.spinner('Processando...'):
+    with st.spinner('Lendo bases...'):
         df_oficial = pd.read_excel(f_oficial, sheet_name='Result by order')
         df_skus = pd.read_excel(f_oficial, sheet_name='Dados SKUs')
         df_spec = pd.read_excel(f_spec) if f_spec.name.endswith('.xlsx') else pd.read_csv(f_spec)
