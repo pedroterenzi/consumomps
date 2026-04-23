@@ -2,129 +2,146 @@ import streamlit as st
 import pandas as pd
 import io
 
-st.set_page_config(page_title="PCP - Rastreabilidade de Lotes", layout="wide")
+st.set_page_config(page_title="PCP - Rastreabilidade Total", layout="wide")
 
-# --- FUNÇÕES DE LIMPEZA E CONVERSÃO ---
-
+# --- FUNÇÕES DE LIMPEZA ---
 def clean_id(val):
     if pd.isna(val) or val == "": return ""
     return str(val).strip().split('.')[0].lstrip('0')
 
 def parse_num(val):
-    """ Converte valores de forma segura, tratando pontos de milhar e vírgulas """
+    """ Converte valores tratando o problema de pontos/vírgulas do Excel BR """
     if pd.isna(val) or val == "": return 0.0
     s = str(val).strip()
-    # Se houver mais de um ponto e uma vírgula (ex: 1.234.567,89)
-    if s.count('.') >= 1 and ',' in s:
-        s = s.replace('.', '').replace(',', '.')
-    # Se houver apenas vírgula (ex: 1234,56)
-    elif ',' in s:
-        s = s.replace(',', '.')
+    
+    # Se tiver vírgula, é formato brasileiro (ex: 1.100,50 ou 1100,50)
+    if "," in s:
+        s = s.replace(".", "").replace(",", ".")
+    # Se não tiver vírgula mas tiver mais de um ponto (ex: 1.100.500)
+    elif s.count(".") > 1:
+        s = s.replace(".", "")
+    
     try:
-        res = float(s)
-        # Proteção contra valores astronômicos por erro de leitura de decimal
-        return res if res < 1000000 else res / 1000 
+        return float(s)
     except:
         return 0.0
 
-st.title("📊 Relatório de Consumo Real por Lote")
+st.title("📊 Relatório de Consumo PCP (Com Herança de Lote)")
+st.markdown("Este sistema abate o consumo da OP anterior dos lotes registrados e traz o saldo para a OP atual.")
 
 # --- SIDEBAR ---
-st.sidebar.header("Arquivos")
-file_oficial = st.sidebar.file_uploader("Relatório Oficial (Peças Real)", type=["xlsm", "xlsx"])
-file_stand = st.sidebar.file_uploader("Real x Stand (Specs e Perdas)", type=["xlsx"])
-file_registros = st.sidebar.file_uploader("Controle Requisição (Lotes)", type=["xlsx"])
+st.sidebar.header("Upload das Planilhas")
+file_oficial = st.sidebar.file_uploader("1. Relatório Oficial (Produção Real)", type=["xlsm", "xlsx"])
+file_stand = st.sidebar.file_uploader("2. Real x Stand (Specs e Perdas)", type=["xlsx"])
+file_registros = st.sidebar.file_uploader("3. Controle Requisição (Lotes)", type=["xlsx"])
 
 if file_oficial and file_stand and file_registros:
-    with st.spinner('Processando dados...'):
+    with st.spinner('Lendo arquivos...'):
         df_oficial = pd.read_excel(file_oficial, sheet_name='Result by order')
         df_stand = pd.read_excel(file_stand, sheet_name='2-Totais por OP   Produto')
         df_perdas = pd.read_excel(file_stand, sheet_name='Planilha1')
         df_reg = pd.read_excel(file_registros, sheet_name='REGISTROS', skiprows=2)
 
-    # Limpeza de colunas
+    # Preparar referências
     df_oficial['OP_REF'] = df_oficial['Nº Ordem'].apply(clean_id)
     df_reg['OP_REF'] = df_reg['OP'].apply(clean_id)
     df_reg['SKU_REF'] = df_reg['SKU'].apply(clean_id)
     df_stand['OP_REF'] = df_stand.iloc[:, 0].apply(clean_id)
     
+    ops_list = sorted(df_oficial['OP_REF'].unique(), reverse=True)
+    
     col1, col2 = st.columns(2)
     with col1:
-        op_alvo = st.selectbox("Selecione a OP Atual (ex: 18940)", sorted(df_oficial['OP_REF'].unique(), reverse=True))
+        op_alvo = st.selectbox("Selecione a OP Atual", ops_list)
     with col2:
-        op_anterior = st.text_input("Informe a OP Anterior (ex: 18938)")
+        op_anterior = st.text_input("Informe a OP Anterior (para herança de lote)")
 
-    if st.button("Gerar Relatório PCP"):
-        # 1. Produção Real
-        prod_real = df_oficial[df_oficial['OP_REF'] == op_alvo]['Machine Counter'].sum()
+    if st.button("🚀 Gerar Relatório"):
+        # 1. Produções Reais
+        prod_atual = df_oficial[df_oficial['OP_REF'] == op_alvo]['Machine Counter'].sum()
+        prod_prev = 0
+        if op_anterior:
+            prod_prev = df_oficial[df_oficial['OP_REF'] == clean_id(op_anterior)]['Machine Counter'].sum()
         
-        # 2. Localizar Materiais na Real x Stand
+        # 2. Materiais da OP Atual
         materiais = df_stand[df_stand.iloc[:, 0].astype(str).str.contains(op_alvo)].copy()
         
-        final_report = []
+        relatorio_final = []
 
         for _, row in materiais.iterrows():
-            sku = clean_id(row.iloc[4]) # M A T E R I A L CODIGO
+            sku = clean_id(row.iloc[4])
             if not sku or not str(row.iloc[4]).isdigit(): continue
             
-            # Cálculo da ESPEC manual conforme seu relato
-            qtd_programada_op = parse_num(row.iloc[3])
-            qtd_std_mp = parse_num(row.iloc[11])
-            espec = qtd_std_mp / qtd_programada_op if qtd_programada_op > 0 else 0
+            desc = row.iloc[5]
             
-            # Fator de Perda
+            # Cálculo de Espec e Perda
+            q_prog = parse_num(row.iloc[3])
+            q_std = parse_num(row.iloc[11])
+            espec = q_std / q_prog if q_prog > 0 else 0
+            
             fator_row = df_perdas[df_perdas['Código'].apply(clean_id) == sku]
             fator = fator_row['% da espec'].values[0] if not fator_row.empty else 1.0
             
-            # TOTAL NECESSÁRIO EM KG PARA A OP ATUAL
-            consumo_necessario = (espec * prod_real) * fator
+            # Demanda das duas OPs
+            demanda_atual = (espec * prod_atual) * fator
+            demanda_prev = (espec * prod_prev) * fator
             
-            # 3. LÓGICA DE HERANÇA DE LOTE (OP Anterior + OP Atual)
-            # Pegamos tudo que entrou para esse SKU nas duas OPs
-            ops_para_busca = [op_alvo]
-            if op_anterior: ops_para_busca.insert(0, clean_id(op_anterior))
+            # 3. Lógica de Lotes (Unindo Anterior e Atual)
+            buscas = []
+            if op_anterior: buscas.append(clean_id(op_anterior))
+            buscas.append(op_alvo)
             
-            lotes_disponiveis = df_reg[(df_reg['OP_REF'].isin(ops_para_busca)) & (df_reg['SKU_REF'] == sku)].copy()
+            lotes_total = df_reg[(df_reg['OP_REF'].isin(buscas)) & (df_reg['SKU_REF'] == sku)].copy()
             
-            if lotes_disponiveis.empty:
-                final_report.append({
-                    "Código": sku, "Descrição": row.iloc[5], "Quantidade (Kg)": round(consumo_necessario, 2),
-                    "Lote": "LOTE NÃO ENCONTRADO", "Origem": "Verificar Físico"
+            if lotes_total.empty:
+                relatorio_final.append({
+                    "Código": sku, "Descrição": desc, "Quantidade (Kg)": round(demanda_atual, 2),
+                    "Lote": "S/ REGISTRO", "Origem": "Verificar Manual"
                 })
             else:
-                # Aqui simulamos o consumo: o saldo que sobra de uma vai para a outra
-                saldo_a_abater = consumo_necessario
-                for _, lote_row in lotes_disponiveis.iterrows():
-                    if saldo_necessario <= 0: break
-                    
-                    qtd_lote = parse_num(lote_row['QUANTIDADE'])
-                    lote_id = lote_row['LOTE']
-                    
-                    consumo_deste_lote = min(saldo_a_abater, qtd_lote)
-                    saldo_a_abater -= consumo_deste_lote
-                    
-                    final_report.append({
-                        "Código": sku, "Descrição": row.iloc[5], 
-                        "Quantidade (Kg)": round(consumo_deste_lote, 2),
-                        "Lote": lote_id, "Origem": f"OP {lote_row['OP']}"
-                    })
+                # Primeiro, "gastamos" a demanda da OP anterior nos lotes
+                saldo_prev = demanda_prev
+                saldo_atual = demanda_atual
                 
-                # Se ainda faltar, indica que veio de mais atrás
-                if saldo_a_abater > 0.5:
-                    final_report.append({
-                        "Código": sku, "Descrição": row.iloc[5], 
-                        "Quantidade (Kg)": round(saldo_a_abater, 2),
-                        "Lote": "SALDO REMANESCENTE", "Origem": "Estoque Máquina"
+                for _, l_row in lotes_total.iterrows():
+                    qtd_lote_orig = parse_num(l_row['QUANTIDADE'])
+                    lote_id = l_row['LOTE']
+                    
+                    # Consumindo para a OP anterior
+                    if saldo_prev > 0:
+                        gasto_prev = min(saldo_prev, qtd_lote_orig)
+                        saldo_prev -= gasto_prev
+                        qtd_restante_no_lote = qtd_lote_orig - gasto_prev
+                    else:
+                        qtd_restante_no_lote = qtd_lote_orig
+                    
+                    # O que sobrou do lote vai para a OP Atual
+                    if qtd_restante_no_lote > 0 and saldo_atual > 0:
+                        uso_atual = min(saldo_atual, qtd_restante_no_lote)
+                        saldo_atual -= uso_atual
+                        
+                        relatorio_final.append({
+                            "Código": sku, "Descrição": desc, 
+                            "Quantidade (Kg)": round(uso_atual, 2),
+                            "Lote": lote_id, "Origem": f"Entrada {l_row['OP']}"
+                        })
+                
+                # Se ainda faltar quilo para a OP atual após todos os lotes
+                if saldo_atual > 0.5:
+                    relatorio_final.append({
+                        "Código": sku, "Descrição": desc, 
+                        "Quantidade (Kg)": round(saldo_atual, 2),
+                        "Lote": "PENDENTE", "Origem": "Saldo pendente"
                     })
 
-        df_final = pd.DataFrame(final_report)
-        st.write(f"### Relatório de Consumo - OP {op_alvo}")
+        df_final = pd.DataFrame(relatorio_final)
+        st.subheader(f"Relatório de Consumo Final - OP {op_alvo}")
         st.table(df_final)
 
         # Download
-        towrite = io.BytesIO()
-        df_final.to_excel(towrite, index=False, engine='xlsxwriter')
-        st.download_button("📥 Baixar Excel para o PCP", towrite.getvalue(), f"Consumo_Lote_OP_{op_alvo}.xlsx")
+        output = io.BytesIO()
+        df_final.to_excel(output, index=False, engine='xlsxwriter')
+        st.download_button("📥 Baixar Excel PCP", output.getvalue(), f"Consumo_Lotes_OP_{op_alvo}.xlsx")
 
 else:
-    st.info("Aguardando upload das planilhas para calcular os consumos.")
+    st.info("Carregue as planilhas para gerar o relatório.")
