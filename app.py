@@ -9,7 +9,6 @@ from google.oauth2.service_account import Credentials
 st.set_page_config(page_title="PCP Elite - Automação Total", layout="wide")
 
 # --- CONFIGURAÇÕES DO GOOGLE SHEETS ---
-# ID extraído do link fornecido
 SPREADSHEET_ID = '1OAYZ66D4XxE0B4IIlrAtGqOFEx3qVP2s9jqzCbE_lWw'
 
 def enviar_para_google_sheets(df):
@@ -17,33 +16,35 @@ def enviar_para_google_sheets(df):
         scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
         
         if "google_credentials" in st.secrets:
-            # Converte os secrets para dicionário
-            creds_info = dict(st.secrets["google_credentials"])
+            # 1. Converte o objeto do Streamlit para um dicionário real
+            creds_info = {k: v for k, v in st.secrets["google_credentials"].items()}
             
-            # Correção do erro "Unable to load PEM file"
+            # 2. LIMPEZA DA CHAVE (Onde o erro costuma acontecer)
+            # Remove aspas extras e garante que as quebras de linha sejam interpretadas corretamente
             if "private_key" in creds_info:
-                creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+                key = creds_info["private_key"]
+                # Se a chave veio com aspas literais ou barras duplas da colagem
+                key = key.replace("\\n", "\n").replace('"', '').strip()
+                creds_info["private_key"] = key
             
             creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
             client = gspread.authorize(creds)
             sh = client.open_by_key(SPREADSHEET_ID)
-            worksheet = sh.get_worksheet(0) # Primeira aba
+            worksheet = sh.get_worksheet(0)
             
-            # Converte para string para o JSON do Google e transforma em lista
             df_export = df.astype(str)
             valores = df_export.values.tolist()
             
-            # Adiciona na planilha (Append)
             worksheet.append_rows(valores)
             return True
         else:
-            st.error("Credenciais 'google_credentials' não configuradas no painel do Streamlit.")
+            st.error("Credenciais não encontradas nos Secrets.")
             return False
     except Exception as e:
         st.error(f"Erro na integração com o Drive: {e}")
         return False
 
-# --- FUNÇÕES DE TRATAMENTO ---
+# --- FUNÇÕES DE TRATAMENTO DE DADOS (Lógica V5 Gold) ---
 
 def clean_id(val):
     if pd.isna(val) or val == "": return ""
@@ -64,8 +65,6 @@ def get_consolidated_specs(df_spec, parent_code):
     first_level = df_spec[df_spec['G1_COD'].apply(clean_id) == parent_clean]
     materiais_unitarios = {}
     scale_factor = 1.0
-    
-    # Fator de escala (Fraldas por fardo)
     for _, row in first_level.iterrows():
         comp_code = clean_id(row['G1_COMP'])
         qty = parse_num(row['G1_QUANT'])
@@ -79,31 +78,28 @@ def get_consolidated_specs(df_spec, parent_code):
                     s_desc = sub_row['DESC_COMP'] if 'DESC_COMP' in df_spec.columns else "MP"
                     materiais_unitarios[s_sku] = {'ratio': s_qty, 'desc': s_desc}
             break
-
     for _, row in first_level.iterrows():
         comp_code = clean_id(row['G1_COMP'])
         if comp_code.startswith(('5', '6')):
             qty = parse_num(row['G1_QUANT'])
             desc = row['DESC_COMP'] if 'DESC_COMP' in df_spec.columns else "MP"
-            ratio_unitario = qty / scale_factor if scale_factor > 0 else qty
+            ratio = qty / scale_factor if scale_factor > 0 else qty
             if comp_code not in materiais_unitarios:
-                materiais_unitarios[comp_code] = {'ratio': ratio_unitario, 'desc': desc}
-                
+                materiais_unitarios[comp_code] = {'ratio': ratio, 'desc': desc}
     return materiais_unitarios, scale_factor
 
 # --- INTERFACE ---
 
-st.title("🚀 PCP Elite - Sistema de Automação de Consumo")
-st.info("Regras aplicadas: Rateio FIFO, Polybag 104% via Peças Estoque e Integração Drive.")
+st.title("🚀 PCP Elite - Sincronização Automática")
 
-st.sidebar.header("📂 Upload Manual")
-f_oficial = st.sidebar.file_uploader("1. Relatório Oficial (X:)", type=["xlsm", "xlsx"])
+st.sidebar.header("📂 Arquivos")
+f_oficial = st.sidebar.file_uploader("1. Relatório Oficial", type=["xlsm", "xlsx"])
 f_spec = st.sidebar.file_uploader("2. SPEC.xlsx", type=["xlsx", "csv"])
-f_perdas = st.sidebar.file_uploader("3. Real x Stand (Planilha1)", type=["xlsx"])
+f_perdas = st.sidebar.file_uploader("3. Real x Stand", type=["xlsx"])
 f_reg = st.sidebar.file_uploader("4. Controle Requisição", type=["xlsx"])
 
 if f_oficial and f_spec and f_perdas and f_reg:
-    with st.spinner('A processar bases de dados...'):
+    with st.spinner('Processando...'):
         df_oficial = pd.read_excel(f_oficial, sheet_name='Result by order')
         df_skus = pd.read_excel(f_oficial, sheet_name='Dados SKUs')
         df_spec = pd.read_excel(f_spec) if f_spec.name.endswith('.xlsx') else pd.read_csv(f_spec)
@@ -115,75 +111,48 @@ if f_oficial and f_spec and f_perdas and f_reg:
     df_reg['SKU_REF'] = df_reg['SKU'].apply(clean_id)
     
     op_alvo = st.selectbox("Selecione a OP Atual", sorted(df_oficial['OP_REF'].unique(), reverse=True))
-    op_anterior = st.text_input("Informe a OP Anterior")
+    op_anterior = st.text_input("OP Anterior")
 
-    if st.button("📊 Processar e Sincronizar com Drive"):
-        # 1. Produção
+    if st.button("📊 Gerar e Salvar no Drive"):
         dados_op = df_oficial[df_oficial['OP_REF'] == op_alvo]
         prod_bruta = dados_op['Machine Counter'].sum()
-        prod_estoque = dados_op['Peças Estoque - Ajuste'].sum() # Coluna AN
+        prod_estoque = dados_op['Peças Estoque - Ajuste'].sum()
         cod_pai = clean_id(dados_op['Código'].iloc[0])
 
-        # 2. Especificações e Escala
         materiais, escala_spec = get_consolidated_specs(df_spec, cod_pai)
-        # Busca escala na Dados SKUs coluna D (índice 3)
         sku_info = df_skus[df_skus.iloc[:, 0].apply(clean_id) == cod_pai]
         fardo_estoque = parse_num(sku_info.iloc[0, 3]) if not sku_info.empty else escala_spec
 
         pre_report = []
-
         for sku, info in materiais.items():
-            if "MOD" in sku or not sku.isdigit(): continue
-            
-            # Consumo Meta e Anterior
             if sku.startswith('5905'):
-                # Regra Polybag: Peças Estoque / Fardo * 1.04
                 meta = (prod_estoque / fardo_estoque) * 1.04
-                if op_anterior:
-                    d_ant = df_oficial[df_oficial['OP_REF'] == clean_id(op_anterior)]
-                    c_prev = (d_ant['Peças Estoque - Ajuste'].sum() / fardo_estoque) * 1.04
-                else: c_prev = 0
+                c_prev = (df_oficial[df_oficial['OP_REF'] == clean_id(op_anterior)]['Peças Estoque - Ajuste'].sum() / fardo_estoque) * 1.04 if op_anterior else 0
             else:
-                f_row = df_perdas[df_perdas['Código'].apply(clean_id) == sku]
-                fator = parse_num(f_row['% da espec'].values[0]) if not f_row.empty else 1.0
+                fator = parse_num(df_perdas[df_perdas['Código'].apply(clean_id) == sku]['% da espec'].values[0]) if not df_perdas[df_perdas['Código'].apply(clean_id) == sku].empty else 1.0
                 meta = (info['ratio'] * prod_bruta) * fator
-                if op_anterior:
-                    p_ant = df_oficial[df_oficial['OP_REF'] == clean_id(op_anterior)]['Machine Counter'].sum()
-                    c_prev = (info['ratio'] * p_ant) * fator
-                else: c_prev = 0
+                c_prev = (info['ratio'] * df_oficial[df_oficial['OP_REF'] == clean_id(op_anterior)]['Machine Counter'].sum()) * fator if op_anterior else 0
             
-            # Rateio Lotes
-            ops_busca = [clean_id(op_anterior), op_alvo] if op_anterior else [op_alvo]
-            lotes_disp = df_reg[(df_reg['OP_REF'].isin(ops_busca)) & (df_reg['SKU_REF'] == sku)].copy()
-            saldo = meta
-            reserva = c_prev
+            lotes_disp = df_reg[(df_reg['OP_REF'].isin([clean_id(op_anterior), op_alvo] if op_anterior else [op_alvo])) & (df_reg['SKU_REF'] == sku)].copy()
+            saldo, reserva = meta, c_prev
             
             if lotes_disp.empty:
                 pre_report.append({"OP": op_alvo, "Código": sku, "Descrição": info['desc'], "Quantidade": round(meta, 3), "Lote": "S/ REGISTRO"})
             else:
                 for _, l_row in lotes_disp.iterrows():
                     if saldo <= 0: break
-                    qtd_ent = parse_num(l_row['QUANTIDADE'])
+                    qtd = parse_num(l_row['QUANTIDADE'])
                     if reserva > 0:
-                        gasto = min(reserva, qtd_ent); reserva -= gasto; qtd_ent -= gasto
-                    if qtd_ent > 0 and saldo > 0:
-                        uso = min(saldo, qtd_ent); saldo -= uso
-                        pre_report.append({"OP": clean_id(l_row['OP']), "Código": sku, "Descrição": info['desc'], "Quantidade": uso, "Lote": str(l_row['LOTE']).strip()})
-                
-                if saldo > 1.0:
-                    pre_report.append({"OP": "VERIFICAR", "Código": sku, "Descrição": info['desc'], "Quantidade": round(saldo, 3), "Lote": "FALTA REGISTRO"})
+                        g = min(reserva, qtd); reserva -= g; qtd -= g
+                    if qtd > 0 and saldo > 0:
+                        u = min(saldo, qtd); saldo -= u
+                        pre_report.append({"OP": clean_id(l_row['OP']), "Código": sku, "Descrição": info['desc'], "Quantidade": u, "Lote": str(l_row['LOTE']).strip()})
+                if saldo > 1.0: pre_report.append({"OP": "VERIFICAR", "Código": sku, "Descrição": info['desc'], "Quantidade": round(saldo, 3), "Lote": "FALTA REGISTRO"})
 
-        df_pre = pd.DataFrame(pre_report)
-        if not df_pre.empty:
-            df_final = df_pre.groupby(['OP', 'Código', 'Descrição', 'Lote'], as_index=False).agg({'Quantidade': 'sum'})
-            df_final = df_final[['OP', 'Código', 'Descrição', 'Quantidade', 'Lote']]
-            
-            st.write("### Dados Processados:")
+        df_final = pd.DataFrame(pre_report)
+        if not df_final.empty:
+            df_final = df_final.groupby(['OP', 'Código', 'Descrição', 'Lote'], as_index=False).agg({'Quantidade': 'sum'})[['OP', 'Código', 'Descrição', 'Quantidade', 'Lote']]
             st.table(df_final.round(3))
-            
-            # Envio Drive
             if enviar_para_google_sheets(df_final):
-                st.success("✅ Integrado no Drive da UCB com sucesso!")
+                st.success("✅ Enviado com sucesso!")
                 st.balloons()
-        else:
-            st.warning("Nenhum dado gerado.")
