@@ -174,12 +174,33 @@ if f_oficial and f_spec and f_perdas and f_reg:
             st.table(df_final.round(3))
             
             # Envio para o Google Drive
-            with st.spinner('Sincronizando com Google Sheets...'):
-                if enviar_para_google_sheets(df_final):
-                    st.success("✅ Dados adicionados com sucesso na planilha mestre do Drive!")
-                    st.balloons()
+         def enviar_para_google_sheets(df):
+    try:
+        scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+        
+        if "google_credentials" in st.secrets:
+            # Pega as credenciais dos Secrets
+            creds_info = dict(st.secrets["google_credentials"])
+            
+            # CORREÇÃO CRÍTICA: Trata as quebras de linha da private_key
+            if "private_key" in creds_info:
+                creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+            
+            creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+            client = gspread.authorize(creds)
+            sh = client.open_by_key(SPREADSHEET_ID)
+            worksheet = sh.get_worksheet(0)
+            
+            df_export = df.astype(str)
+            valores = df_export.values.tolist()
+            
+            worksheet.append_rows(valores)
+            return True
         else:
-            st.warning("Nenhum dado foi gerado para esta OP.")
-
+            st.error("Erro: Credenciais 'google_credentials' não encontradas.")
+            return False
+    except Exception as e:
+        st.error(f"Erro na integração com o Drive: {e}")
+        return False
 else:
     st.info("Por favor, faça o upload dos 4 arquivos na barra lateral para começar.")
