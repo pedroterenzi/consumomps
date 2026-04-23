@@ -90,7 +90,8 @@ if f_oficial and f_spec and f_perdas and f_reg:
                 consumo_meta = (prod_estoque / fardo_estoque) * 1.04
                 cons_prev = (df_oficial[df_oficial['OP_REF'] == clean_id(op_anterior)]['Peças Estoque - Ajuste'].sum() / fardo_estoque) * 1.04 if op_anterior else 0
             else:
-                fator = parse_num(df_perdas[df_perdas['Código'].apply(clean_id) == sku]['% da espec'].values[0]) if not df_perdas[df_perdas['Código'].apply(clean_id) == sku].empty else 1.0
+                f_row = df_perdas[df_perdas['Código'].apply(clean_id) == sku]
+                fator = parse_num(f_row['% da espec'].values[0]) if not f_row.empty else 1.0
                 consumo_meta = (info['ratio'] * prod_bruta) * fator
                 cons_prev = (info['ratio'] * df_oficial[df_oficial['OP_REF'] == clean_id(op_anterior)]['Machine Counter'].sum()) * fator if op_anterior else 0
             
@@ -122,15 +123,19 @@ if f_oficial and f_spec and f_perdas and f_reg:
             st.subheader(f"✅ Resultado OP {op_alvo}")
             st.table(df_final)
 
-            # --- NOVA FUNÇÃO: COPIAR PARA O DRIVE ---
-            st.subheader("📋 Copiar para o Google Sheets")
-            st.write("Clique no botão abaixo, dê um **CTRL+C** no texto que aparecer e **CTRL+V** na sua planilha.")
+            # --- FUNÇÃO DE COPIA SEM CABEÇALHO ---
+            st.subheader("📋 Dados para Colar no Drive")
             
-            # Formata os dados para o formato que o Sheets aceita (Tab-separated)
-            csv_formatado = df_final.to_csv(index=False, sep='\t')
-            st.text_area("Dados formatados (Selecione e copie)", value=csv_formatado, height=200)
+            # Gera o texto sem o index e sem o header (cabeçalho)
+            # O separador '\t' garante que o Sheets entenda as colunas
+            dados_brutos = df_final.to_csv(index=False, header=False, sep='\t')
             
-            # Mantemos o download como backup oficial
+            st.write("Clique dentro do quadro abaixo, use **Ctrl+A** para selecionar tudo e **Ctrl+C**.")
+            st.text_area("Bloco de Colagem (Sem Cabeçalho)", value=dados_brutos, height=250)
+            
+            st.info("💡 Dica: No Google Drive, basta selecionar a primeira célula vazia da coluna OP e dar Ctrl+V.")
+            
+            # Backup em Excel se precisar
             buffer = io.BytesIO()
             df_final.to_excel(buffer, index=False)
             st.download_button("📥 Baixar Excel (Backup)", buffer.getvalue(), f"PCP_OP_{op_alvo}.xlsx")
