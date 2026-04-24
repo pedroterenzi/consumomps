@@ -77,7 +77,22 @@ if f_oficial and f_spec and f_perdas and f_reg:
         prod_bruta = dados_op['Machine Counter'].sum()
         prod_estoque = dados_op['Peças Estoque - Ajuste'].sum()
         cod_pai = clean_id(dados_op['Código'].iloc[0])
+        desc_pai = dados_op['Descrição'].iloc[0] if 'Descrição' in dados_op.columns else "SKU Final"
 
+        # --- PAINEL DE INFORMAÇÕES DA ORDEM (APENAS VISUAL) ---
+        st.markdown("---")
+        st.subheader(f"📈 Resumo da Ordem: {op_alvo}")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.metric("Produto", f"{cod_pai}")
+        with c2:
+            st.metric("Total Peças (Máquina)", f"{int(prod_bruta):,}".replace(',', '.'))
+        with c3:
+            st.metric("Peças p/ Estoque", f"{int(prod_estoque):,}".replace(',', '.'))
+        st.caption(f"Descrição: {desc_pai}")
+        st.markdown("---")
+
+        # Lógica de cálculo
         materiais, escala_spec = get_consolidated_specs(df_spec, cod_pai)
         sku_info = df_skus[df_skus.iloc[:, 0].apply(clean_id) == cod_pai]
         fardo_estoque = parse_num(sku_info.iloc[0, 3]) if not sku_info.empty else escala_spec
@@ -119,25 +134,17 @@ if f_oficial and f_spec and f_perdas and f_reg:
             df_final['Quantidade'] = df_final['Quantidade'].round(3)
             df_final = df_final[['OP', 'Código', 'Descrição', 'Quantidade', 'Lote']]
             
-            st.markdown("---")
-            st.subheader(f"✅ Resultado OP {op_alvo}")
+            st.subheader(f"✅ Tabela de Consumo")
             st.table(df_final)
 
-            # --- PREPARAÇÃO PARA COLAGEM NO DRIVE (PADRÃO BRASIL) ---
+            # --- BLOCO DE COLAGEM ---
             st.subheader("📋 Bloco para Copiar (Padrão BR)")
-            
-            # Criamos uma cópia para não estragar o backup em Excel
             df_copia = df_final.copy()
-            
-            # Formata a coluna Quantidade: troca ponto por vírgula e garante que não tenha separador de milhar
             df_copia['Quantidade'] = df_copia['Quantidade'].apply(lambda x: "{:.3f}".format(x).replace('.', ','))
-            
-            # Gera o texto para colagem (sem nomes de colunas e com TAB)
             dados_brutos = df_copia.to_csv(index=False, header=False, sep='\t')
             
             st.text_area("Selecione tudo (Ctrl+A), copie e cole no Sheets", value=dados_brutos, height=250)
             
-            # Backup em Excel (mantém o padrão técnico de ponto para não dar erro em outras análises)
             buffer = io.BytesIO()
             df_final.to_excel(buffer, index=False)
             st.download_button("📥 Baixar Excel (Backup)", buffer.getvalue(), f"PCP_OP_{op_alvo}.xlsx")
