@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
+import urllib.parse
 
 # Configuração da Página
 st.set_page_config(page_title="PCP Elite - Gestão de Saldo", layout="wide")
@@ -80,7 +81,7 @@ if f_oficial and f_spec and f_perdas and f_reg and f_historico:
     df_hist['SKU_REF'] = df_hist['Código'].apply(clean_id)
     df_hist['LOTE_REF'] = df_hist['Lote'].astype(str).str.strip()
 
-    # --- CÁLCULO DE SALDO ---
+    # --- CÁLCULO DE SALDO DISPONÍVEL ---
     entradas = df_reg.groupby(['SKU_REF', 'LOTE_REF'])['QUANTIDADE_NUM'].sum().reset_index()
     consumidos = df_hist.groupby(['SKU_REF', 'LOTE_REF'])['QUANTIDADE_NUM'].sum().reset_index()
     saldos_lotes = pd.merge(entradas, consumidos, on=['SKU_REF', 'LOTE_REF'], how='left', suffixes=('_ENT', '_CONS'))
@@ -97,7 +98,7 @@ if f_oficial and f_spec and f_perdas and f_reg and f_historico:
         cod_pai = clean_id(dados_op['Código'].iloc[0])
         desc_pai = dados_op['Descrição'].iloc[0] if 'Descrição' in dados_op.columns else "SKU Final"
 
-        # --- REPLICAÇÃO DO PAINEL VISUAL DE INFORMAÇÕES ---
+        # --- PAINEL VISUAL DE INFORMAÇÕES ---
         st.markdown("---")
         st.subheader(f"📈 Resumo da Ordem: {op_alvo}")
         c1, c2, c3 = st.columns(3)
@@ -110,7 +111,6 @@ if f_oficial and f_spec and f_perdas and f_reg and f_historico:
         st.caption(f"Descrição: {desc_pai}")
         st.markdown("---")
 
-        # Lógica de cálculo de materiais
         materiais, escala_spec = get_consolidated_specs(df_spec, cod_pai)
         sku_info = df_skus[df_skus.iloc[:, 0].apply(clean_id) == cod_pai]
         fardo_estoque = parse_num(sku_info.iloc[0, 3]) if not sku_info.empty else escala_spec
@@ -120,7 +120,6 @@ if f_oficial and f_spec and f_perdas and f_reg and f_historico:
         for sku, info in materiais.items():
             if "MOD" in sku or not sku.isdigit(): continue
             
-            # Necessidade Meta
             if sku.startswith('5905'):
                 meta = (prod_estoque / fardo_estoque) * 1.04
             else:
@@ -128,7 +127,7 @@ if f_oficial and f_spec and f_perdas and f_reg and f_historico:
                 fator = parse_num(f_row['% da espec'].values[0]) if not f_row.empty else 1.0
                 meta = (info['ratio'] * prod_bruta) * fator
             
-            # Busca de Lotes com Saldo (Prioridade FIFO se possível)
+            # Busca lotes com saldo real > 0.01kg
             lotes_com_estoque = saldos_lotes[(saldos_lotes['SKU_REF'] == sku) & (saldos_lotes['SALDO_REAL'] > 0.01)].copy()
             saldo_a_abater = meta
             
@@ -164,6 +163,25 @@ if f_oficial and f_spec and f_perdas and f_reg and f_historico:
             dados_brutos = df_copia.to_csv(index=False, header=False, sep='\t')
             st.text_area("Selecione tudo (Ctrl+A), copie e cole no Sheets", value=dados_brutos, height=250)
             
+            # --- NOTIFICAÇÃO VIA GMAIL WEB ---
+            st.markdown("---")
+            st.subheader("📧 Notificar Fechamento via Gmail")
+            
+            meu_email = "pedro-santos@unicharm.com"
+            destinatario = "denis-pompollino@unicharm.com"
+            assunto = f"FECHAMENTO DE CONSUMO - OP {op_alvo}"
+            corpo_email = f"Prezado Denis,\n\nInformo que o processamento de consumo da OP {op_alvo} foi concluído.\n\nResumo:\n- Produto: {cod_pai}\n- Máquina: {int(prod_bruta):,} peças\n- Estoque: {int(prod_estoque):,} peças\n\nAtt,\nPedro Santos"
+            
+            gmail_url = f"https://mail.google.com/mail/?view=cm&fs=1&to={destinatario}&cc={meu_email}&su={urllib.parse.quote(assunto)}&body={urllib.parse.quote(corpo_email)}"
+
+            st.markdown(f'''
+                <div style="text-align: center;">
+                    <a href="{gmail_url}" target="_blank" style="text-decoration: none; background-color: #DB4437; color: white; padding: 15px 25px; border-radius: 8px; font-weight: bold; font-size: 18px; display: inline-block;">
+                        ✉️ Abrir Gmail com Resumo da OP
+                    </a>
+                </div>
+            ''', unsafe_allow_html=True)
+
             buffer = io.BytesIO()
             df_final.to_excel(buffer, index=False)
             st.download_button("📥 Baixar Excel (Backup)", buffer.getvalue(), f"PCP_OP_{op_alvo}.xlsx")
